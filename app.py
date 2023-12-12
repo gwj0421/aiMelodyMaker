@@ -1,41 +1,48 @@
-import json
+from concurrent.futures import ThreadPoolExecutor
+from typing import Annotated
 
-from flask import Flask, request
-from flask import jsonify
-from flask import request
-from makeMelody.melodyModel import MelodyModel
+import uvicorn
+from fastapi import FastAPI, Form
+from fastapi.middleware.cors import CORSMiddleware
+
+from configuration.constant import IS_S3_ACTIVATE, SAVE_FILE_TYPE
 from configuration.constant import MODEL_DESCRIPTION
-from flask_cors import CORS
+from makeMelody.melodyModel import MelodyModel
 
-app = Flask(__name__)
-CORS(app, resources={r'*': {'origins': 'http://localhost:8080'}})
+app = FastAPI()
 model = MelodyModel(MODEL_DESCRIPTION)
+executor = ThreadPoolExecutor(max_workers=4)
+
+origins = [
+    "http://localhost:8080"
+]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
-@app.route('/')
-def hello():
-    return 'Hello gunwoong World!'
-
-
-@app.route('/getMelody/<username>', methods=['GET'])
-def makeMelody(username):
-    json_data = request.form.get('inputs', '')
-
+@app.post('/getMelody')
+async def makeMelody(user_id: Annotated[str, Form()],
+                     texts: Annotated[str, Form()],
+                     token_cnt: Annotated[int, Form()] = 256):
+    texts = texts.split("|")
     try:
-        json_data = json.loads(json_data)
-        user_id_data = json_data.get('userId', "unknown")
-        texts_data = json_data.get('texts', [])
-        token_cnt = json_data.get('token_cnt', 256)
-        youtube_uri_data = json_data.get('youtube_uri', [])
+        if IS_S3_ACTIVATE:
+            content = model.upload_to_s3(texts, token_cnt, user_id, SAVE_FILE_TYPE)
+        else:
+            raise Exception()
+        # else:
+        #     content = model.upload_to_backend(texts, token_cnt)
+        # content = executor.submit(model.upload_to_backend(), texts, token_cnt)
 
-    except json.JSONDecodeError as e:
-        print("gwj : Json error")
-
-    model.upload_to_s3(texts_data, token_cnt,user_id_data,'wav')
-
-    response = {'status': 'success', 'message': 'received successfully'}
-    return jsonify(response)
+        return {'status': 'OK', 'content': content}
+    except Exception:
+        return {'status': 'NOT_FOUND'}
 
 
-if __name__ == '__main__':
-    app.run(host='127.0.0.1', port=5000, debug=True)
+if __name__ == "__main__":
+    uvicorn.run(app)
