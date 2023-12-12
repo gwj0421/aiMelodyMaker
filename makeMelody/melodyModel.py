@@ -1,13 +1,14 @@
-from configuration.constant import AWS_ACCESS_KEY, AWS_SECRET_KEY, BUCKET_NAME, LOCATION, S3_SAVE_ROOT_PATH
-from transformers import AutoProcessor, MusicgenForConditionalGeneration
-from configuration.constant import MODEL_SELECTOR
-from IPython.display import Audio, display
-from scipy.io.wavfile import write
+import os
+
+import boto3
+from botocore.client import Config
 from botocore.exceptions import NoCredentialsError
+from transformers import AutoProcessor, MusicgenForConditionalGeneration
+
+from configuration.constant import MODEL_SELECTOR, AWS_ACCESS_KEY, AWS_SECRET_KEY, BUCKET_NAME, LOCATION, S3_SAVE_ROOT_PATH, PRESIGN_URI_EXPIRED_IN
+from service.s3 import generate_presigned_url
 from utils.audio import AudioUtils
 from utils.check import FileNameUtils
-import boto3
-import os
 
 
 class MelodyModel:
@@ -15,40 +16,44 @@ class MelodyModel:
         self.processor = AutoProcessor.from_pretrained(MODEL_SELECTOR.get(description))
         self.model = MusicgenForConditionalGeneration.from_pretrained(MODEL_SELECTOR.get(description))
         self.sampling_rate = self.model.config.audio_encoder.sampling_rate
-        self.s3 = boto3.client('s3', aws_access_key_id=AWS_ACCESS_KEY, aws_secret_access_key=AWS_SECRET_KEY)
+        self.s3 = boto3.client('s3', region_name=LOCATION, aws_access_key_id=AWS_ACCESS_KEY,
+                               aws_secret_access_key=AWS_SECRET_KEY, config=Config(signature_version='s3v4'))
 
-    def processInput(self, texts):
-        return self.processor(text=texts, padding=True, return_tensors="pt")
+    def make_audio(self, texts, token_cnt):
+        inputs = self.processor(
+            text=texts,
+            padding=True,
+            return_tensors="pt",
+        )
+        audio_values = self.model.generate(**inputs, max_new_tokens=token_cnt)
+        return audio_values
 
-    def makeAudioWithPadding(self, texts, token_cnt):
-        return self.model.generate(**self.processInput(texts), max_new_tokens=token_cnt)
-
-    def postProcess(self, audio_values, inputs):
-        return self.processor.batch_decode(audio_values, padding_mask=inputs.padding_mask)
-
-    def makeAudio(self, texts, token_cnt):
-        inputs = self.processInput(texts)
-        audio_values = self.makeAudioWithPadding(texts, token_cnt)
-        return self.postProcess(audio_values, inputs)
-
-    def saveAudio(self, audio_values):
-        for i in range(audio_values.shape[0]):
-            write(f"test_{i}.wav", rate=self.sampling_rate, data=audio_values[i, 0].numpy())
+    # def upload_to_backend(self, texts, token_cnt):
+    #     content = []
+    #     audio_values = self.make_audio(texts, token_cnt)
+    #     for i in range(audio_values.shape[0]):
+    #         audio = AudioUtils.convert_numpy2bytes(audio_values[i, 0].numpy(), self.sampling_rate)
+    #         encode_audio = base64.b64encode(audio)
+    #         content.append(encode_audio)
+    #     return content
 
     def upload_to_s3(self, texts, token_cnt, user_id, file_type="wav"):
-        audio_values = self.makeAudioWithPadding(texts, token_cnt)
+        audio_values = self.make_audio(texts, token_cnt)
+        content = []
 
         for i in range(audio_values.shape[0]):
             try:
                 s3_prefix = os.path.join(S3_SAVE_ROOT_PATH, user_id, texts[i])
                 file_cnt = FileNameUtils.check_s3_path_existence_and_files(BUCKET_NAME, self.s3, s3_prefix)
-                audio = AudioUtils.convert_numpy2bytes(audio_values[i, 0].numpy(), self.sampling_rate)
+                audio_value = AudioUtils.convert_numpy2bytes(audio_values[i, 0].numpy(), self.sampling_rate)
                 save_path = os.path.join(s3_prefix, f"{file_cnt}.{file_type}")
-                self.s3.put_object(Body=audio, Bucket=BUCKET_NAME, Key=save_path)
+                self.s3.put_object(Body=audio_value, Bucket=BUCKET_NAME, Key=save_path)
+                save_uris = generate_presigned_url(self.s3, "get_object", {'Bucket': BUCKET_NAME, 'Key': save_path},
+                                                   PRESIGN_URI_EXPIRED_IN)
+
+                content.append([save_path, save_uris])
+
             except NoCredentialsError:
                 print("Credentials not available")
 
-    def displayAudio(self, texts, token_cnt):
-        audio_values = self.makeAudioWithPadding(texts, token_cnt)
-        for audio in audio_values:
-            display(Audio(audio.numpy(), rate=self.sampling_rate))
+        return content
