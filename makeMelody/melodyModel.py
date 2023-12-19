@@ -5,10 +5,12 @@ from botocore.client import Config
 from botocore.exceptions import NoCredentialsError
 from transformers import AutoProcessor, MusicgenForConditionalGeneration
 
-from configuration.constant import MODEL_SELECTOR, AWS_ACCESS_KEY, AWS_SECRET_KEY, BUCKET_NAME, LOCATION, S3_SAVE_ROOT_PATH, PRESIGN_URI_EXPIRED_IN
+from configuration.constant import MODEL_SELECTOR, AWS_ACCESS_KEY, AWS_SECRET_KEY, BUCKET_NAME, LOCATION, \
+    S3_SAVE_ROOT_PATH, PRESIGN_URI_EXPIRED_IN
 from service.s3 import generate_presigned_url
 from utils.audio import AudioUtils
 from utils.check import FileNameUtils
+from datetime import datetime
 
 
 class MelodyModel:
@@ -51,7 +53,7 @@ class MelodyModel:
                 save_uris = generate_presigned_url(self.s3, "get_object", {'Bucket': BUCKET_NAME, 'Key': save_path},
                                                    PRESIGN_URI_EXPIRED_IN)
 
-                content.append([save_path, save_uris])
+                content.append([save_path, save_uris, int(datetime.now().timestamp()) + PRESIGN_URI_EXPIRED_IN])
 
             except NoCredentialsError:
                 print("Credentials not available")
